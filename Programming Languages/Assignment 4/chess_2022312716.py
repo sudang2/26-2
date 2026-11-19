@@ -1,4 +1,4 @@
-"""Chess Assignment STEP 4: ordinary piece movement and captures."""
+"""Chess Assignment STEP 5: castling, en passant, promotion, and king safety checks."""
 
 
 FILES = "abcdefgh"
@@ -7,6 +7,7 @@ DIGITS = "0123456789"
 
 
 class ChessBoard:
+
     def __init__(self):
         self._rows = [
             list("RNBQKBNR"),
@@ -41,6 +42,7 @@ class ChessBoard:
             for x in range(8):
                 board._rows[y][x] = self._rows[y][x]
         return board
+
 
     def trace_path(self, source, destination, directions):
         source_x, source_y = source
@@ -95,6 +97,47 @@ class ChessBoard:
             return self.trace_path(command.source, command.destination, directions)
         return False
 
+
+    def is_attacked(self, square, attacker):
+        for y in range(8):
+            for x in range(8):
+                piece = self.get_piece((x, y))
+                if piece == ".":
+                    continue
+                if attacker == "white" and piece.islower():
+                    continue
+                if attacker == "black" and piece.isupper():
+                    continue
+
+                dx = square[0] - x
+                dy = square[1] - y
+                if dx == 0 and dy == 0:
+                    continue
+
+                if piece.lower() == "p":
+                    direction = 1
+                    if piece.islower():
+                        direction = -1
+                    if abs(dx) == 1 and dy == direction:
+                        return True
+                else:
+                    command = MoveCommand((x, y), square)
+                    if self.can_move(command):
+                        return True
+        return False
+
+    def king_is_safe(self, player):
+        king = "K"
+        opponent = "black"
+        if player == "black":
+            king = "k"
+            opponent = "white"
+        for y in range(8):
+            for x in range(8):
+                if self.get_piece((x, y)) == king:
+                    return not self.is_attacked((x, y), opponent)
+        return False
+
     def render(self):
         lines = []
         for y in range(7, -1, -1):
@@ -104,13 +147,16 @@ class ChessBoard:
 
 
 class MoveCommand:
+
     def __init__(self, source, destination, promotion=None):
         self.source = source
         self.destination = destination
         self.promotion = promotion
 
 
+
 class MoveEffect:
+
     def __init__(self, moving_piece, captured_piece):
         self.changes = []
         self.moving_piece = moving_piece
@@ -168,11 +214,14 @@ def is_case_id(line):
 
 
 class ChessGame:
+
     def __init__(self, case_id):
         self.case_id = case_id
         self.board = ChessBoard()
         self.commands = []
         self.current_player = "white"
+        self.castling_rights = [(0, 0), (7, 0), (0, 7), (7, 7)]
+        self.en_passant_target = None
         self.invalid_input = False
 
     def read_move(self, line):
@@ -206,25 +255,153 @@ class ChessGame:
         if target.lower() == "k":
             return None
 
-        # Promotion is added in STEP 5.
-        if command.promotion is not None:
-            return None
+        source_x, source_y = command.source
         destination_x, destination_y = command.destination
-        if piece.lower() == "p" and destination_y in (0, 7):
+
+        if piece.lower() == "k" and abs(destination_x - source_x) == 2:
+            if command.promotion is not None:
+                return None
+            effect = self.validate_castling(command)
+        else:
+            placed_piece = piece
+            if piece.lower() == "p" and destination_y in (0, 7):
+                if command.promotion not in ("q", "r", "b", "n"):
+                    return None
+                placed_piece = command.promotion
+                if piece.isupper():
+                    placed_piece = placed_piece.upper()
+            elif command.promotion is not None:
+                return None
+
+            if piece.lower() == "p" and source_x != destination_x and target == ".":
+                effect = self.validate_en_passant(command)
+            else:
+                if not self.board.can_move(command):
+                    return None
+                effect = MoveEffect(piece, target)
+                effect.add_change(command.source, ".")
+                effect.add_change(command.destination, placed_piece)
+                if placed_piece != piece:
+                    effect.move_type = "promotion"
+
+        if effect is None:
             return None
-        if not self.board.can_move(command):
+        temporary_board = self.board.copy()
+        effect.apply(temporary_board)
+        if not temporary_board.king_is_safe(self.current_player):
+            return None
+        return effect
+
+    def validate_castling(self, command):
+        rank = 0
+        king = "K"
+        rook = "R"
+        opponent = "black"
+        if self.current_player == "black":
+            rank = 7
+            king = "k"
+            rook = "r"
+            opponent = "white"
+
+        if command.source != (4, rank):
+            return None
+        if command.destination not in ((2, rank), (6, rank)):
             return None
 
-        effect = MoveEffect(piece, target)
+        rook_x = 7
+        crossing_x = 5
+        between = [5, 6]
+        if command.destination[0] == 2:
+            rook_x = 0
+            crossing_x = 3
+            between = [1, 2, 3]
+
+        rook_square = (rook_x, rank)
+        if rook_square not in self.castling_rights:
+            return None
+        if self.board.get_piece(command.source) != king:
+            return None
+        if self.board.get_piece(rook_square) != rook:
+            return None
+        for x in between:
+            if self.board.get_piece((x, rank)) != ".":
+                return None
+
+        if self.board.is_attacked(command.source, opponent):
+            return None
+        temporary_board = self.board.copy()
+        temporary_board.set_piece(command.source, ".")
+        temporary_board.set_piece((crossing_x, rank), king)
+        if temporary_board.is_attacked((crossing_x, rank), opponent):
+            return None
+
+        effect = MoveEffect(king, ".")
+        effect.move_type = "castling"
+        effect.add_change(command.source, ".")
+        effect.add_change(command.destination, king)
+        effect.add_change(rook_square, ".")
+        effect.add_change((crossing_x, rank), rook)
+        return effect
+
+    def validate_en_passant(self, command):
+        source_x, source_y = command.source
+        destination_x, destination_y = command.destination
+        direction = 1
+        required_rank = 4
+        opponent_pawn = "p"
+        if self.current_player == "black":
+            direction = -1
+            required_rank = 3
+            opponent_pawn = "P"
+
+        if source_y != required_rank:
+            return None
+        if command.destination != self.en_passant_target:
+            return None
+        if abs(destination_x - source_x) != 1 or destination_y - source_y != direction:
+            return None
+        if self.board.get_piece(command.destination) != ".":
+            return None
+        captured_square = (destination_x, source_y)
+        if self.board.get_piece(captured_square) != opponent_pawn:
+            return None
+
+        piece = self.board.get_piece(command.source)
+        effect = MoveEffect(piece, opponent_pawn)
+        effect.move_type = "en_passant"
         effect.add_change(command.source, ".")
         effect.add_change(command.destination, piece)
+        effect.add_change(captured_square, ".")
         return effect
+
+    def remove_castling_right(self, square):
+        if square in self.castling_rights:
+            self.castling_rights.remove(square)
+
+    def update_rights(self, command, effect):
+        source_x, source_y = command.source
+        if effect.moving_piece.lower() == "k":
+            self.remove_castling_right((0, source_y))
+            self.remove_castling_right((7, source_y))
+        elif effect.moving_piece.lower() == "r":
+            self.remove_castling_right(command.source)
+        if effect.captured_piece.lower() == "r":
+            self.remove_castling_right(command.destination)
+
+    def update_en_passant(self, command, effect):
+        self.en_passant_target = None
+        source_x, source_y = command.source
+        destination_x, destination_y = command.destination
+        if effect.moving_piece.lower() == "p" and abs(destination_y - source_y) == 2:
+            self.en_passant_target = (source_x, (source_y + destination_y) // 2)
 
     def play_move(self, command):
         effect = self.validate_move(command)
         if effect is None:
             return False
         effect.apply(self.board)
+        self.update_rights(command, effect)
+        self.update_en_passant(command, effect)
         self.commands.append(command)
         self.switch_player()
         return True
