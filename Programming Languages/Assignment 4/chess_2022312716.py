@@ -1,4 +1,4 @@
-"""Chess Assignment STEP 5: castling, en passant, promotion, and king safety checks."""
+"""Chess Assignment STEP 6: checkmate, stalemate, insufficient material, and the 75-move rule."""
 
 
 FILES = "abcdefgh"
@@ -7,7 +7,6 @@ DIGITS = "0123456789"
 
 
 class ChessBoard:
-
     def __init__(self):
         self._rows = [
             list("RNBQKBNR"),
@@ -42,7 +41,6 @@ class ChessBoard:
             for x in range(8):
                 board._rows[y][x] = self._rows[y][x]
         return board
-
 
     def trace_path(self, source, destination, directions):
         source_x, source_y = source
@@ -97,7 +95,6 @@ class ChessBoard:
             return self.trace_path(command.source, command.destination, directions)
         return False
 
-
     def is_attacked(self, square, attacker):
         for y in range(8):
             for x in range(8):
@@ -138,6 +135,25 @@ class ChessBoard:
                     return not self.is_attacked((x, y), opponent)
         return False
 
+    def insufficient_material(self):
+        pieces = []
+        bishop_colors = []
+        for y in range(8):
+            for x in range(8):
+                piece = self.get_piece((x, y)).lower()
+                if piece == "." or piece == "k":
+                    continue
+                pieces.append(piece)
+                if piece == "b":
+                    bishop_colors.append((x + y) % 2)
+        if len(pieces) == 0:
+            return True
+        if len(pieces) == 1 and pieces[0] in ("b", "n"):
+            return True
+        if len(bishop_colors) == len(pieces):
+            return min(bishop_colors) == max(bishop_colors)
+        return False
+
     def render(self):
         lines = []
         for y in range(7, -1, -1):
@@ -147,16 +163,13 @@ class ChessBoard:
 
 
 class MoveCommand:
-
     def __init__(self, source, destination, promotion=None):
         self.source = source
         self.destination = destination
         self.promotion = promotion
 
 
-
 class MoveEffect:
-
     def __init__(self, moving_piece, captured_piece):
         self.changes = []
         self.moving_piece = moving_piece
@@ -214,7 +227,6 @@ def is_case_id(line):
 
 
 class ChessGame:
-
     def __init__(self, case_id):
         self.case_id = case_id
         self.board = ChessBoard()
@@ -222,6 +234,8 @@ class ChessGame:
         self.current_player = "white"
         self.castling_rights = [(0, 0), (7, 0), (0, 7), (7, 7)]
         self.en_passant_target = None
+        self.halfmove_count = 0
+        self.game_status = "playing"
         self.invalid_input = False
 
     def read_move(self, line):
@@ -235,6 +249,8 @@ class ChessGame:
             self.invalid_input = True
 
     def validate_move(self, command):
+        if self.game_status != "playing":
+            return None
         if not self.board.inside_board(command.source):
             return None
         if not self.board.inside_board(command.destination):
@@ -402,9 +418,53 @@ class ChessGame:
         effect.apply(self.board)
         self.update_rights(command, effect)
         self.update_en_passant(command, effect)
+        self.update_halfmove(effect)
         self.commands.append(command)
         self.switch_player()
+        self.check_game_status()
         return True
+
+    def update_halfmove(self, effect):
+        if effect.moving_piece.lower() == "p" or effect.captured_piece != ".":
+            self.halfmove_count = 0
+        else:
+            self.halfmove_count += 1
+
+    def has_legal_move(self):
+        for source_y in range(8):
+            for source_x in range(8):
+                piece = self.board.get_piece((source_x, source_y))
+                if piece == ".":
+                    continue
+                if self.current_player == "white" and piece.islower():
+                    continue
+                if self.current_player == "black" and piece.isupper():
+                    continue
+                for destination_y in range(8):
+                    for destination_x in range(8):
+                        promotions = [None]
+                        if piece.lower() == "p" and destination_y in (0, 7):
+                            promotions = ["q", "r", "b", "n"]
+                        for promotion in promotions:
+                            command = MoveCommand(
+                                (source_x, source_y),
+                                (destination_x, destination_y),
+                                promotion,
+                            )
+                            if self.validate_move(command) is not None:
+                                return True
+        return False
+
+    def check_game_status(self):
+        if not self.has_legal_move():
+            if self.board.king_is_safe(self.current_player):
+                self.game_status = "stalemate"
+            else:
+                self.game_status = "checkmate"
+        elif self.board.insufficient_material():
+            self.game_status = "insufficient"
+        elif self.halfmove_count >= 150:
+            self.game_status = "seventy_five"
 
     def switch_player(self):
         if self.current_player == "white":
